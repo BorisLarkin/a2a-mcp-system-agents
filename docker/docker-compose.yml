@@ -1,0 +1,211 @@
+services:
+  # 1. АГЕНТ-КЛАССИФИКАТОР
+  classifier:
+    build: ../agents/classifier
+    container_name: mcp-classifier
+    ports:
+      - "${CLASSIFIER_PORT}:${AGENT_PORT}"
+    environment:
+      - AGENT_NAME=${CLASSIFIER_NAME}
+      - AGENT_TYPE=${CLASSIFIER_TYPE}
+      - MCP_TOOLS=http://rubert-classifier:${RUBERT_PORT}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - ENVIRONMENT=${ENVIRONMENT}
+    volumes:
+      - ../agents/classifier:/app
+      - ../models/classifier:/models
+    networks:
+      - ${NETWORK_NAME}
+    # depends_on:
+    #   rubert-classifier:
+    #     condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${AGENT_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 2. АГЕНТ-ИССЛЕДОВАТЕЛЬ
+  researcher:
+    build: ../agents/researcher
+    container_name: mcp-researcher
+    ports:
+      - "${RESEARCHER_PORT}:${AGENT_PORT}"
+    environment:
+      - AGENT_NAME=${RESEARCHER_NAME}
+      - AGENT_TYPE=${RESEARCHER_TYPE}
+      - ENABLE_INTERNET_SEARCH=${RESEARCHER_ENABLE_SEARCH}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - ENVIRONMENT=${ENVIRONMENT}
+    volumes:
+      - ../agents/researcher:/app
+      - ../models/researcher:/models
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${AGENT_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 3. АГЕНТ-ГЕНЕРАТОР (оптимизированная версия)
+  generator:
+    build: 
+      context: ../agents/generator
+      dockerfile: Dockerfile.dev
+      args:
+        - MODEL_NAME=${GENERATOR_MODEL}
+    container_name: mcp-generator
+    ports:
+      - "${GENERATOR_PORT}:${AGENT_PORT}"
+    environment:
+      - AGENT_NAME=${GENERATOR_NAME}
+      - AGENT_TYPE=${GENERATOR_TYPE}
+      - MODEL_NAME=${GENERATOR_MODEL}
+      - TEMPERATURE=${GENERATOR_TEMPERATURE}
+      - MAX_TOKENS=${GENERATOR_MAX_TOKENS}
+      - OLLAMA_HOST=${OLLAMA_HOST}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - ENVIRONMENT=${ENVIRONMENT}
+    volumes:
+      - ../agents/generator:/app
+      - ../models/generator:/models
+      - generator-cache:/root/.cache
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${AGENT_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  # 4. Redis (с healthcheck)
+  redis:
+    image: redis:7-alpine
+    container_name: mcp-redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - ${REDIS_DATA}:/data
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 5. MCP RuBERT Классификатор
+  # rubert-classifier:
+  #   build: ../mcp-tools/rubert-classifier
+  #   container_name: mcp-rubert
+  #   ports:
+  #     - "${RUBERT_PORT}:${AGENT_PORT}"
+  #   environment:
+  #     - MODEL_NAME=cointegrated/${RUBERT_NAME}
+  #     - NUM_CLASSES=${RUBERT_CLASSES}
+  #     - LOG_LEVEL=${LOG_LEVEL}
+  #   volumes:
+  #     - ../mcp-tools/rubert-classifier:/app
+  #     - ../models/classifier:/models
+  #     - rubert-cache:/root/.cache
+  #   networks:
+  #     - ${NETWORK_NAME}
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:${AGENT_PORT}/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 60s
+
+  # 6. MCP Sentence Encoder
+  sentence-encoder:
+    build: ../mcp-tools/sentence-encoder
+    container_name: mcp-encoder
+    ports:
+      - "${ENCODER_PORT}:${AGENT_PORT}"
+    environment:
+      - MODEL_NAME=sentence-transformers/${ENCODER_NAME}
+      - LOG_LEVEL=${LOG_LEVEL}
+    volumes:
+      - ../mcp-tools/sentence-encoder:/app
+      - ../models/encoder:/models
+      - encoder-cache:/root/.cache
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${AGENT_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # 7. Ollama
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mcp-ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_NUM_PARALLEL=4
+      - OLLAMA_MAX_LOADED_MODELS=1
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        reservations:
+          memory: 4G
+        limits:
+          memory: 8G
+  
+  model-prewarm:
+    build: ../scripts/model-prewarm
+    container_name: model-prewarm
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL}
+      - OLLAMA_MODEL_TAG=${OLLAMA_MODEL_TAG}
+      - OLLAMA_HOST=${OLLAMA_HOST}
+      - RUN_ONCE=false
+    networks:
+      - ${NETWORK_NAME}
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+networks:
+  mcp-ai-network:
+    name: ${NETWORK_NAME}
+    driver: ${NETWORK_DRIVER}
+
+volumes:
+  redis-data:
+    name: ${REDIS_DATA}
+  generator-cache:
+  rubert-cache:
+  encoder-cache:
+  ollama-data:

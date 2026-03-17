@@ -1,0 +1,22 @@
+# Dockerfile.dev
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Устанавливаем системные зависимости
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копируем requirements.txt
+COPY requirements.txt .
+
+# Устанавливаем зависимости в системную директорию
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Команда по умолчанию (будет переопределена при монтировании)
+CMD ["python", "main.py"]
