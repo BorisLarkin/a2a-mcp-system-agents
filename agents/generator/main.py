@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import asyncio
+import uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
@@ -58,6 +59,16 @@ class OllamaRequest(BaseModel):
 class OllamaResponse(BaseModel):
     response: str
 
+class A2ATaskRequest(BaseModel):
+    skill_id: str
+    input: Dict[str, Any]
+
+class A2ATaskResponse(BaseModel):
+    task_id: Optional[str] = None
+    status: str  # "completed" | "failed"
+    output: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""
@@ -77,15 +88,48 @@ async def discovery():
         "type": AGENT_TYPE,
         "description": "Text generation and response formatting agent",
         "version": "1.0.0",
-        "endpoint": f"http://{AGENT_TYPE}:8080",
-        "capabilities": [
-            "text_generation", 
-            "response_formatting", 
-            "tone_adjustment",
-            "multi_language"
+        "endpoint": f"http://{AGENT_TYPE}:9003",
+        "capabilities": ["generation"],
+        "skills": [
+            {
+                "id": "generate_response",
+                "description": "Generate final answer based on classification and solutions",
+                "input_schema": {
+                    "query": "string (user text)",
+                    "category": "string (problem category)",
+                    "solutions": "array of {title, content, confidence}",
+                    "style": "string (formal|friendly|technical|balanced)",
+                    "context": "string (additional context)",
+                    "language": "string (ru|en)"
+                },
+                "output_schema": {
+                    "response": "string (generated text)",
+                    "style": "string",
+                    "metadata": "object"
+                }
+            },
+            {
+                "id": "format_response",
+                "description": "Format and adjust tone of existing answer",
+                "input_schema": {
+                    "query": "string",
+                    "solutions": "array",
+                    "style": "string"
+                },
+                "output_schema": {
+                    "formatted_response": "string",
+                    "tone": "string"
+                }
+            }
         ],
         "llm_model": MODEL_NAME,
-        "supports": ["a2a/v1"],
+        "supports": ["a2a/v1", "tasks/send"],
+        "a2a_protocol": {
+            "task_endpoint": "/tasks/send",
+            "status_endpoint": "/tasks/{task_id}/status",
+            "async_support": False,
+            "note": "Currently synchronous – tasks return completed immediately"
+        },
         "configuration": {
             "temperature": TEMPERATURE,
             "max_tokens": MAX_TOKENS
@@ -241,6 +285,90 @@ async def format_response(request: GenerationRequest):
     except Exception as e:
         logger.error(f"Formatting error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============ A2A Protocol Endpoint ============
+
+@app.post("/tasks/send", response_model=A2ATaskResponse)
+async def tasks_send(request: A2ATaskRequest):
+    """
+    A2A endpoint: receive a task, execute skill, return result
+    
+    Synchronous implementation for now – returns completed result immediately.
+    """
+    logger.info(f"A2A Task received: skill={request.skill_id}, input_keys={list(request.input.keys())}")
+    
+    try:
+        if request.skill_id == "generate_response":
+            # Преобразуем input в GenerationRequest
+            gen_req = GenerationRequest(**request.input)
+            
+            # Выполняем генерацию (та же логика, что в /v1/generate)
+            prompt = build_prompt(gen_req)
+            response_text = await call_ollama(prompt)
+            
+            if not response_text:
+                logger.warning("Ollama unavailable, using mock response")
+                response_text = generate_mock_response(gen_req)
+            
+            metadata = {
+                "solutions_used": len(gen_req.solutions),
+                "category": gen_req.category,
+                "model": MODEL_NAME,
+                "temperature": TEMPERATURE,
+                "max_tokens": MAX_TOKENS,
+                "ollama_used": bool(response_text and response_text != generate_mock_response(gen_req))
+            }
+            
+            output = {
+                "response": response_text,
+                "style": gen_req.style,
+                "metadata": metadata
+            }
+            
+            return A2ATaskResponse(
+                task_id=str(uuid.uuid4()),
+                status="completed",
+                output=output
+            )
+        
+        elif request.skill_id == "format_response":
+            # Форматирование ответа
+            gen_req = GenerationRequest(**request.input)
+            formatted = f"[{gen_req.style.upper()}] {gen_req.query}"
+            if gen_req.solutions:
+                formatted += f"\n\nРешение: {gen_req.solutions[0].get('title', '')}"
+            
+            output = {
+                "formatted_response": formatted,
+                "tone": gen_req.style,
+                "metadata": {
+                    "solutions_available": len(gen_req.solutions),
+                    "format_version": "1.0"
+                }
+            }
+            
+            return A2ATaskResponse(
+                task_id=str(uuid.uuid4()),
+                status="completed",
+                output=output
+            )
+        
+        else:
+            return A2ATaskResponse(
+                task_id=str(uuid.uuid4()),
+                status="failed",
+                error=f"Unknown skill_id: {request.skill_id}"
+            )
+            
+    except Exception as e:
+        logger.error(f"A2A Task failed: {str(e)}", exc_info=True)
+        return A2ATaskResponse(
+            task_id=str(uuid.uuid4()),
+            status="failed",
+            error=str(e)
+        )
+
+# ============ End A2A Endpoint ============
 
 @app.on_event("startup")
 async def startup_event():
