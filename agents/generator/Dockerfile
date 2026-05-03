@@ -4,7 +4,7 @@ FROM python:3.11-slim as builder
 WORKDIR /app
 
 # Аргументы сборки
-ARG MODEL_NAME=llama3.2:1b
+ARG MODEL_NAME=ilyagusev/saiga_llama3
 
 # Системные зависимости
 RUN apt-get update && apt-get install -y \

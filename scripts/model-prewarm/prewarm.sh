@@ -3,7 +3,7 @@
 # Устанавливаем значения по умолчанию, если переменные не заданы
 echo 'Getting environment variables...'
 
-OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
+OLLAMA_MODEL=${OLLAMA_MODEL:-saiga_llama3}
 OLLAMA_MODEL_TAG=${OLLAMA_MODEL_TAG:-${OLLAMA_MODEL}:latest}
 OLLAMA_HOST=${OLLAMA_HOST:-ollama:11434}
 

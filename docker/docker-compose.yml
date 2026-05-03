@@ -8,7 +8,6 @@ services:
     environment:
       - AGENT_NAME=${CLASSIFIER_NAME}
       - AGENT_TYPE=${CLASSIFIER_TYPE}
-      - MCP_TOOLS=http://rubert-classifier:${RUBERT_PORT}
       - LOG_LEVEL=${LOG_LEVEL}
       - ENVIRONMENT=${ENVIRONMENT}
     volumes:
@@ -16,9 +15,9 @@ services:
       - ../models/classifier:/models
     networks:
       - ${NETWORK_NAME}
-    # depends_on:
-    #   rubert-classifier:
-    #     condition: service_healthy
+    #depends_on:
+    #  llm-classifier:
+    #    condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${AGENT_PORT}/health"]
@@ -108,29 +107,29 @@ services:
       timeout: 5s
       retries: 3
 
-  # 5. MCP RuBERT Классификатор
-  # rubert-classifier:
-  #   build: ../mcp-tools/rubert-classifier
-  #   container_name: mcp-rubert
-  #   ports:
-  #     - "${RUBERT_PORT}:${AGENT_PORT}"
-  #   environment:
-  #     - MODEL_NAME=cointegrated/${RUBERT_NAME}
-  #     - NUM_CLASSES=${RUBERT_CLASSES}
-  #     - LOG_LEVEL=${LOG_LEVEL}
-  #   volumes:
-  #     - ../mcp-tools/rubert-classifier:/app
-  #     - ../models/classifier:/models
-  #     - rubert-cache:/root/.cache
-  #   networks:
-  #     - ${NETWORK_NAME}
-  #   restart: unless-stopped
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:${AGENT_PORT}/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 60s
+
+  # 5. MCP LLM-классификатор
+  llm-classifier:
+    build: ../mcp-tools/llm-classifier
+    container_name: mcp-llm-classifier
+    ports:
+      - "${LLM_CLASSIFIER_PORT}:8080"
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST}
+      - CLASSIFIER_MODEL=${CLASSIFIER_MODEL}
+      - LOG_LEVEL=${LOG_LEVEL}
+    networks:
+      - ${NETWORK_NAME}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
   # 6. MCP Sentence Encoder
   sentence-encoder:
@@ -170,6 +169,7 @@ services:
     networks:
       - ${NETWORK_NAME}
     restart: unless-stopped
+    runtime: nvidia
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -179,9 +179,12 @@ services:
     deploy:
       resources:
         reservations:
-          memory: 4G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
         limits:
-          memory: 8G
+          memory: 16G
   
   model-prewarm:
     build: ../scripts/model-prewarm

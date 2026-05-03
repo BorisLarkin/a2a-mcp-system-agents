@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Generator Agent", version="1.0.0")
 
 # Конфигурация из переменных окружения
-MODEL_NAME = os.getenv('GENERATOR_MODEL', 'llama3.2')
+MODEL_NAME = os.getenv('GENERATOR_MODEL', 'ilyagusev/saiga_llama3')
 TEMPERATURE = float(os.getenv('GENERATOR_TEMPERATURE', '0.7'))
 MAX_TOKENS = int(os.getenv('GENERATOR_MAX_TOKENS', '500'))
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'http://ollama:11434')
@@ -187,22 +187,22 @@ def build_prompt(request: GenerationRequest) -> str:
             confidence = sol.get('confidence', 1.0)
             solutions_text += f"{i}. {title} (уверенность: {confidence:.2f})\n   {content[:200]}...\n"
     
-    prompt = f"""Ты - AI-ассистент технической поддержки. 
-Стиль ответа: {style_instruction}
-Категория вопроса: {request.category}
-{solutions_text}
-Дополнительный контекст: {request.context}
+    system_prompt = f"""Ты — AI-ассистент технической поддержки.
+    Стиль ответа: {style_instruction}
+    Категория вопроса: {request.category}
+    Контекст: {request.context}
 
-Запрос пользователя: {request.query}
+    Сгенерируй ответ на русском языке. Ответ должен быть вежливым, полезным, не более 3-4 предложений."""
 
-Сгенерируй ответ на русском языке, используя найденные решения.
-Ответ должен быть:
-1. Понятным и полезным
-2. Соответствовать указанному стилю
-3. Содержать конкретные шаги для решения
-4. Завершаться предложением дальнейшей помощи
+    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-Ответ:"""
+    {system_prompt}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+    Запрос пользователя: {request.query}
+
+    Найденные решения: {solutions_text}
+
+    Ответ:<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
     return prompt
 
@@ -243,25 +243,33 @@ async def generate_response(request: GenerationRequest):
 def generate_mock_response(request: GenerationRequest) -> str:
     """Заглушка для генерации ответа"""
     
+    # Безопасное получение первого решения
+    first_solution_title = "Проверьте оборудование"
+    first_solution_content = "Проверьте соединение"
+    if request.solutions:
+        sol = request.solutions[0]
+        first_solution_title = sol.get('title', 'Рекомендация')
+        first_solution_content = sol.get('content', 'Проверьте соединение')[:100]
+    
     mock_responses = {
         "technical": f"Техническое решение: {request.query}. "
-                    f"Рекомендуем: {request.solutions[0]['title'] if request.solutions else 'Проверьте оборудование'}.",
+                    f"Рекомендуем: {first_solution_title}.",
         
         "friendly": f"Здравствуйте! Похоже, у вас проблема: {request.query}. "
-                   f"Попробуйте: {request.solutions[0]['content'][:100] if request.solutions else 'Перезагрузите устройство'}. "
+                   f"Попробуйте: {first_solution_content}. "
                    f"Обращайтесь, если нужна помощь!",
         
         "formal": f"Уважаемый пользователь, по вашему обращению '{request.query}' "
-                 f"предлагаем следующее решение: {request.solutions[0]['title'] if request.solutions else 'Проверьте соединение'}.",
+                 f"предлагаем следующее решение: {first_solution_title}.",
         
         "balanced": f"По вашему запросу '{request.query}'. "
-                   f"Рекомендуем: {request.solutions[0]['content'][:150] if request.solutions else 'Обратиться в поддержку'}."
+                   f"Рекомендуем: {first_solution_content}."
     }
     
     return mock_responses.get(
         request.style, 
         f"По вопросу '{request.query}' - "
-        f"{request.solutions[0]['content'][:100] if request.solutions else 'Требуется дополнительная информация'}"
+        f"{first_solution_content}"
     )
 
 @app.post("/v1/format-response")
