@@ -2,37 +2,21 @@ import os
 import json
 import logging
 import uuid
+import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
-import httpx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Researcher Agent", version="1.0.0")
+app = FastAPI(title="Researcher Agent", version="2.0.0")
 
-# --- Pydantic Models ---
+# MCP-инструменты
+ENCODER_MCP_URL = os.getenv("ENCODER_MCP_URL", "http://sentence-encoder:8080/mcp")
+QDRANT_MCP_URL = os.getenv("QDRANT_MCP_URL", "http://qdrant-search:8080/mcp")
 
-class ResearchRequest(BaseModel):
-    query: str
-    category: str = None
-    use_internet: bool = False
-    max_results: int = 3
-
-class ResearchResult(BaseModel):
-    title: str
-    content: str
-    relevance: float
-    source: str
-
-class ResearchResponse(BaseModel):
-    results: List[ResearchResult]
-    source: str
-    metadata: Dict[str, Any]
-
-# --- A2A Protocol Models ---
-
+# --- A2A Models ---
 class A2ATaskRequest(BaseModel):
     skill_id: str
     input: Dict[str, Any]
@@ -43,44 +27,81 @@ class A2ATaskResponse(BaseModel):
     output: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
-# --- Core research logic ---
+# --- MCP Helpers ---
 
-def do_research(query: str, category: str = None, use_internet: bool = False, max_results: int = 3) -> dict:
-    """
-    Заглушка поиска. В будущем — запрос к Qdrant / SearXNG.
-    """
-    mock_results = [
-        {
-            "title": "Решение: проблемы с интернетом",
-            "content": "Проверьте подключение кабелей, перезагрузите роутер.",
-            "relevance": 0.89,
-            "source": "knowledge_base"
+async def call_mcp_tool(mcp_url: str, tool_name: str, arguments: dict) -> dict:
+    """Универсальный вызов MCP-инструмента"""
+    rpc_request = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
         },
-        {
-            "title": "Частые проблемы после грозы",
-            "content": "После грозы часто сгорает сетевое оборудование.",
-            "relevance": 0.76,
-            "source": "knowledge_base"
-        }
-    ]
+        "id": 1
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(mcp_url, json=rpc_request)
+        resp.raise_for_status()
+        result = resp.json()
+        if "error" in result:
+            raise Exception(result["error"]["message"])
+        return result["result"]
+
+
+async def get_embedding(text: str) -> list:
+    """Получает эмбеддинг текста через sentence-encoder"""
+    result = await call_mcp_tool(ENCODER_MCP_URL, "embed", {"texts": [text]})
+    embeddings = result.get("embeddings", [])
+    return embeddings[0] if embeddings else []
+
+
+async def search_qdrant(vector: list, category: str = None, limit: int = 5) -> list:
+    """Поиск в Qdrant по вектору"""
+    arguments = {
+        "vector": vector,
+        "limit": limit,
+        "score_threshold": 0.3
+    }
+    if category:
+        arguments["category"] = category
     
-    if use_internet:
-        mock_results.append({
-            "title": "Что делать если не работает интернет",
-            "content": "Проверьте индикаторы на роутере, позвоните провайдеру.",
-            "relevance": 0.82,
-            "source": "internet"
-        })
+    result = await call_mcp_tool(QDRANT_MCP_URL, "search", arguments)
+    return result.get("results", [])
+
+
+async def do_research(query: str, category: str = None, max_results: int = 3) -> dict:
+    """
+    Основная логика исследования:
+    1. Векторизовать запрос
+    2. Найти релевантные документы в Qdrant
+    3. Отранжировать и вернуть
+    """
+    # Шаг 1: получаем эмбеддинг
+    vector = await get_embedding(query)
+    if not vector:
+        return {
+            "results": [],
+            "source": "none",
+            "metadata": {"error": "Failed to get embedding"}
+        }
+    
+    # Шаг 2: ищем в Qdrant
+    results = await search_qdrant(vector, category=category, limit=max_results + 2)
+    
+    # Шаг 3: отбираем лучшие
+    top_results = results[:max_results]
     
     return {
-        "results": mock_results[:max_results],
-        "source": "rag_and_internet" if use_internet else "rag",
+        "results": top_results,
+        "source": "rag",
         "metadata": {
             "query": query,
-            "results_count": len(mock_results[:max_results]),
-            "processing_time": 0.2
+            "results_count": len(top_results),
+            "total_found": len(results)
         }
     }
+
 
 # --- REST Endpoints ---
 
@@ -90,39 +111,67 @@ async def health():
 
 @app.get("/.well-known/agent.json")
 async def discovery():
-    """A2A Discovery endpoint"""
+    """A2A Discovery endpoint с JSON Schema"""
     return {
-        "name": "researcher-v1",
+        "name": "researcher-v2",
         "type": "researcher",
-        "description": "Information retrieval and research agent",
-        "version": "1.0.0",
+        "description": "Information retrieval agent using vector search (Qdrant) and embeddings",
+        "version": "2.0.0",
         "endpoint": "http://researcher:9002",
         "capabilities": ["search"],
         "skills": [
             {
                 "id": "search",
-                "description": "Search knowledge base and optionally internet for solutions",
+                "description": "Поиск релевантных решений в базе знаний через векторный поиск",
                 "input_schema": {
-                    "query": "string (search query)",
-                    "category": "string (optional, problem category)",
-                    "use_internet": "bool (default false)",
-                    "max_results": "int (default 3)"
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Текст обращения"},
+                        "category": {"type": "string", "description": "Категория для фильтрации (опционально)"},
+                        "max_results": {"type": "integer", "default": 3, "description": "Максимальное количество результатов"}
+                    },
+                    "required": ["query"]
                 },
                 "output_schema": {
-                    "results": "array of {title, content, relevance, source}",
-                    "source": "string",
-                    "metadata": "object"
+                    "type": "object",
+                    "properties": {
+                        "results": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "title": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "category": {"type": "string"},
+                                    "source": {"type": "string"},
+                                    "relevance": {"type": "number", "minimum": 0, "maximum": 1}
+                                }
+                            }
+                        },
+                        "source": {"type": "string"},
+                        "metadata": {"type": "object"}
+                    },
+                    "required": ["results", "source"]
                 }
             },
             {
                 "id": "search_knowledge_base",
-                "description": "Search only local knowledge base",
+                "description": "Поиск только в локальной базе знаний (без интернета)",
                 "input_schema": {
-                    "query": "string",
-                    "max_results": "int"
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "max_results": {"type": "integer", "default": 3}
+                    },
+                    "required": ["query"]
                 },
                 "output_schema": {
-                    "results": "array of {id, content, relevance}"
+                    "type": "object",
+                    "properties": {
+                        "results": {"type": "array"},
+                        "source": {"type": "string"}
+                    }
                 }
             }
         ],
@@ -133,62 +182,24 @@ async def discovery():
         }
     }
 
-@app.post("/v1/research")
-async def research(request: ResearchRequest):
-    """Поиск информации (прямой вызов)"""
-    try:
-        logger.info(f"Research query: {request.query}")
-        result = do_research(
-            query=request.query,
-            category=request.category,
-            use_internet=request.use_internet,
-            max_results=request.max_results
-        )
-        
-        results = [ResearchResult(**r) for r in result["results"]]
-        return ResearchResponse(
-            results=results,
-            source=result["source"],
-            metadata=result["metadata"]
-        )
-    except Exception as e:
-        logger.error(f"Research error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/v1/search-knowledge-base")
-async def search_knowledge_base(request: ResearchRequest):
-    """Поиск в базе знаний (прямой вызов)"""
-    return {
-        "results": [
-            {
-                "id": "doc_001",
-                "content": "Техническая поддержка работает 24/7",
-                "relevance": 0.91
-            }
-        ]
-    }
-
-# --- A2A Protocol Endpoint ---
+# --- A2A Endpoint ---
 
 @app.post("/tasks/send", response_model=A2ATaskResponse)
 async def tasks_send(request: A2ATaskRequest):
     """
-    A2A endpoint: receive a task, execute skill, return result.
-    Synchronous implementation.
+    A2A endpoint: выполняет поиск решений через Qdrant.
     """
     logger.info(f"A2A Task received: skill={request.skill_id}")
     
     try:
-        if request.skill_id == "search":
+        if request.skill_id in ("search", "search_knowledge_base"):
             query = request.input.get("query", "")
             category = request.input.get("category")
-            use_internet = request.input.get("use_internet", False)
             max_results = request.input.get("max_results", 3)
             
-            result = do_research(
+            result = await do_research(
                 query=query,
                 category=category,
-                use_internet=use_internet,
                 max_results=max_results
             )
             
@@ -198,27 +209,11 @@ async def tasks_send(request: A2ATaskRequest):
                 output=result
             )
         
-        elif request.skill_id == "search_knowledge_base":
-            query = request.input.get("query", "")
-            max_results = request.input.get("max_results", 3)
-            
-            output = {
-                "results": [
-                    {"id": "doc_001", "content": f"Результат по запросу: {query}", "relevance": 0.91}
-                ]
-            }
-            
-            return A2ATaskResponse(
-                task_id=str(uuid.uuid4()),
-                status="completed",
-                output=output
-            )
-        
         else:
             return A2ATaskResponse(
                 task_id=str(uuid.uuid4()),
                 status="failed",
-                error=f"Unknown skill_id: {request.skill_id}"
+                error=f"Unknown skill: {request.skill_id}"
             )
     
     except Exception as e:
@@ -228,6 +223,7 @@ async def tasks_send(request: A2ATaskRequest):
             status="failed",
             error=str(e)
         )
+
 
 if __name__ == "__main__":
     import uvicorn

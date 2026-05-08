@@ -38,6 +38,11 @@ services:
       - ENABLE_INTERNET_SEARCH=${RESEARCHER_ENABLE_SEARCH}
       - LOG_LEVEL=${LOG_LEVEL}
       - ENVIRONMENT=${ENVIRONMENT}
+      - ENCODER_MCP_URL=http://sentence-encoder:8080/mcp
+      - QDRANT_MCP_URL=http://qdrant-search:8080/mcp
+    depends_on:
+      - sentence-encoder
+      - qdrant-search
     volumes:
       - ../agents/researcher:/app
       - ../models/researcher:/models
@@ -186,6 +191,46 @@ services:
         limits:
           memory: 16G
   
+    # Qdrant — векторная база данных
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: mcp-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - ${NETWORK_NAME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MCP Qdrant Search
+  qdrant-search:
+    build: ../mcp-tools/qdrant-search
+    container_name: mcp-qdrant-search
+    ports:
+      - "${QDRANT_SEARCH_PORT}:8080"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - VECTOR_SIZE=384
+      - LOG_LEVEL=${LOG_LEVEL}
+    networks:
+      - ${NETWORK_NAME}
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+  
   model-prewarm:
     build: ../scripts/model-prewarm
     container_name: model-prewarm
@@ -212,3 +257,4 @@ volumes:
   rubert-cache:
   encoder-cache:
   ollama-data:
+  qdrant-data:

@@ -8,8 +8,6 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     git \
-    curl \
-    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements отдельно для кэширования
