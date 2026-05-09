@@ -127,8 +127,10 @@ async def discovery():
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Текст обращения"},
-                        "category": {"type": "string", "description": "Категория для фильтрации (опционально)"},
-                        "max_results": {"type": "integer", "default": 3, "description": "Максимальное количество результатов"}
+                        "text": {"type": "string", "description": "Текст обращения (альтернативное поле)"},
+                        "category": {"type": "string", "description": "Категория из классификатора"},
+                        "previous_results": {"type": "object", "description": "Результаты предыдущих шагов"},
+                        "max_results": {"type": "integer", "default": 3}
                     },
                     "required": ["query"]
                 },
@@ -193,7 +195,8 @@ async def tasks_send(request: A2ATaskRequest):
     
     try:
         if request.skill_id in ("search", "search_knowledge_base"):
-            query = request.input.get("query", "")
+
+            query = request.input.get("query") or request.input.get("text", "")
             category = request.input.get("category")
             max_results = request.input.get("max_results", 3)
             

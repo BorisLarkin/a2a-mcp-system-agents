@@ -55,18 +55,35 @@ async def health():
 @app.get("/.well-known/agent.json")
 async def discovery():
     return {
-        "name": "classifier-v1",
+        "name": "llm-classifier-agent",
         "type": "classifier",
         "description": "Text classification agent (uses LLM via MCP)",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "endpoint": "http://classifier:9001",
         "capabilities": ["classification"],
         "skills": [
             {
                 "id": "classify",
                 "description": "Classify user request into problem category with confidence score",
-                "input_schema": {"text": "string"},
-                "output_schema": {"category": "string", "confidence": "float"}
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Текст обращения"},
+                        "previous_results": {"type": "object", "description": "Результаты предыдущих шагов"}
+                    },
+                    "required": ["text"]
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string", "description": "Категория обращения"},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "Уверенность классификации"},
+                        "predicted_class": {"type": "string"},
+                        "entities": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["category", "confidence"],
+                    "confidence_field": "confidence"
+                }
             }
         ],
         "supports": ["a2a/v1", "tasks/send"]

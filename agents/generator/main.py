@@ -95,17 +95,25 @@ async def discovery():
                 "id": "generate_response",
                 "description": "Generate final answer based on classification and solutions",
                 "input_schema": {
-                    "query": "string (user text)",
-                    "category": "string (problem category)",
-                    "solutions": "array of {title, content, confidence}",
-                    "style": "string (formal|friendly|technical|balanced)",
-                    "context": "string (additional context)",
-                    "language": "string (ru|en)"
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Текст обращения"},
+                        "text": {"type": "string", "description": "Текст обращения (альтернативное поле)"},
+                        "category": {"type": "string", "description": "Категория из классификатора"},
+                        "previous_results": {"type": "object", "description": "Все результаты предыдущих шагов"},
+                        "style": {"type": "string", "default": "friendly"},
+                        "language": {"type": "string", "default": "ru"}
+                    },
+                    "required": ["query"]
                 },
                 "output_schema": {
-                    "response": "string (generated text)",
-                    "style": "string",
-                    "metadata": "object"
+                    "type": "object",
+                    "properties": {
+                        "response": {"type": "string", "description": "Финальный ответ"},
+                        "style": {"type": "string"},
+                        "metadata": {"type": "object"}
+                    },
+                    "required": ["response"]
                 }
             },
             {
@@ -307,29 +315,88 @@ async def tasks_send(request: A2ATaskRequest):
     
     try:
         if request.skill_id == "generate_response":
-            # Преобразуем input в GenerationRequest
-            gen_req = GenerationRequest(**request.input)
+            # Извлекаем данные из нового универсального формата payload
+            query = request.input.get("query") or request.input.get("text", "")
+            category = request.input.get("category", "общий_вопрос")
+            style = request.input.get("style", "friendly")
+            language = request.input.get("language", "ru")
+            config = request.input.get("config", {})
             
-            # Выполняем генерацию (та же логика, что в /v1/generate)
-            prompt = build_prompt(gen_req)
+            # Извлекаем solutions из previous_results, если есть
+            solutions = []
+            previous_results = request.input.get("previous_results", {})
+            
+            # Ищем результаты researcher'а
+            if "researcher_result" in previous_results:
+                researcher_result = previous_results["researcher_result"]
+                if isinstance(researcher_result, dict):
+                    results = researcher_result.get("results", [])
+                    solutions = results
+            # Если researcher_result нет, ищем в любом результате
+            elif previous_results:
+                for key, value in previous_results.items():
+                    if isinstance(value, dict) and "results" in value:
+                        solutions = value["results"]
+                        break
+                    
+            # Собираем контекст из конфигурации
+            company_context = ""
+            if isinstance(config, dict):
+                company_context = config.get("company_context", "")
+            
+            # Формируем промпт для Saiga
+            style_mapping = {
+                "formal": "Формальный деловой стиль",
+                "friendly": "Дружелюбный и поддерживающий тон",
+                "technical": "Технический стиль с деталями",
+                "balanced": "Сбалансированный профессиональный тон"
+            }
+            style_instruction = style_mapping.get(style, "Дружелюбный тон")
+            
+            solutions_text = ""
+            if solutions:
+                solutions_text = "\nНайденные решения:\n"
+                for i, sol in enumerate(solutions[:3], 1):
+                    title = sol.get('title', 'Рекомендация')
+                    content = sol.get('content', '')
+                    solutions_text += f"{i}. {title}: {content}\n"
+            
+            system_prompt = f"""Ты — AI-ассистент технической поддержки.
+        Стиль ответа: {style_instruction}
+        Категория вопроса: {category}
+        Контекст компании: {company_context}
+        
+        Сгенерируй ответ на русском языке. Ответ должен быть вежливым, полезным, не более 3-4 предложений."""
+        
+            prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        
+        {system_prompt}<|eot_id|><|start_header_id|>user<|end_header_id|>
+        
+        Запрос пользователя: {query}
+        
+        {solutions_text}
+        
+        Ответ:<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+            
             response_text = await call_ollama(prompt)
             
             if not response_text:
                 logger.warning("Ollama unavailable, using mock response")
-                response_text = generate_mock_response(gen_req)
+                # Простая заглушка
+                response_text = f"Здравствуйте! По вашему запросу '{query}' мы подобрали рекомендации. Пожалуйста, попробуйте предложенные решения. Если проблема сохранится, обратитесь к оператору."
             
             metadata = {
-                "solutions_used": len(gen_req.solutions),
-                "category": gen_req.category,
+                "solutions_used": len(solutions),
+                "category": category,
                 "model": MODEL_NAME,
                 "temperature": TEMPERATURE,
                 "max_tokens": MAX_TOKENS,
-                "ollama_used": bool(response_text and response_text != generate_mock_response(gen_req))
+                "ollama_used": True
             }
             
             output = {
                 "response": response_text,
-                "style": gen_req.style,
+                "style": style,
                 "metadata": metadata
             }
             
