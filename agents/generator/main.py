@@ -318,9 +318,10 @@ async def tasks_send(request: A2ATaskRequest):
             # Извлекаем данные из нового универсального формата payload
             query = request.input.get("query") or request.input.get("text", "")
             category = request.input.get("category", "общий_вопрос")
-            style = request.input.get("style", "friendly")
             language = request.input.get("language", "ru")
             config = request.input.get("config", {})
+            style = request.input.get("style") or config.get("communication_style", "friendly")
+
             
             # Извлекаем solutions из previous_results, если есть
             solutions = []
@@ -338,21 +339,21 @@ async def tasks_send(request: A2ATaskRequest):
                     if isinstance(value, dict) and "results" in value:
                         solutions = value["results"]
                         break
-                    
-            # Собираем контекст из конфигурации
-            company_context = ""
-            if isinstance(config, dict):
-                company_context = config.get("company_context", "")
             
-            # Формируем промпт для Saiga
             style_mapping = {
                 "formal": "Формальный деловой стиль",
                 "friendly": "Дружелюбный и поддерживающий тон",
                 "technical": "Технический стиль с деталями",
-                "balanced": "Сбалансированный профессиональный тон"
+                "balanced": "Сбалансированный профессиональный тон",
+                "professional": "Точный профессиональный тон"
             }
             style_instruction = style_mapping.get(style, "Дружелюбный тон")
-            
+
+            # Собираем контекст из конфигурации
+            company_context = ""
+            if isinstance(config, dict):
+                company_context = config.get("company_context", "")
+
             solutions_text = ""
             if solutions:
                 solutions_text = "\nНайденные решения:\n"
